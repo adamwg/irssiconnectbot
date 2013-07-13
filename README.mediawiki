@@ -1,0 +1,3 @@
+Adios, Irssi ConnectBot and welcome Irssi ConnectBot 2 (this time without ConnectBot fork)!
+
+https://github.com/irssiconnectbot/irssiconnectbot2

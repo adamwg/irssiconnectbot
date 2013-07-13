@@ -3,5 +3,7 @@ tools/
 bin
 gen
 launchpad-*.tar.gz
-.settings
-.DS_S*
+local.properties
+*~
+*.iml
+.idea

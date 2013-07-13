@@ -17,6 +17,7 @@
 
 package org.woltage.irssiconnectbot;
 
+import org.woltage.irssiconnectbot.bean.PubkeyBean;
 import org.woltage.irssiconnectbot.bean.SelectionArea;
 import org.woltage.irssiconnectbot.service.PromptHelper;
 import org.woltage.irssiconnectbot.service.TerminalBridge;
@@ -26,8 +27,10 @@ import org.woltage.irssiconnectbot.util.PreferenceConstants;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.ActionBar;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
@@ -35,6 +38,7 @@ import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.media.AudioManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -54,6 +58,7 @@ import android.view.MenuItem.OnMenuItemClickListener;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.View.OnKeyListener;
+import android.view.Window;
 import android.view.WindowManager;
 import android.view.animation.Animation;
 import android.view.animation.AnimationUtils;
@@ -69,11 +74,20 @@ import android.widget.ViewFlipper;
 import com.nullwire.trace.ExceptionHandler;
 
 import de.mud.terminal.vt320;
+import org.woltage.irssiconnectbot.util.PubkeyDatabase;
+import org.woltage.irssiconnectbot.util.PubkeyUtils;
+
+import java.io.IOException;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
+import java.security.spec.InvalidKeySpecException;
 
 public class ConsoleActivity extends Activity {
 	public final static String TAG = "ConnectBot.ConsoleActivity";
 
 	protected static final int REQUEST_EDIT = 1;
+    protected static final int REQUEST_SELECT = 2;
 
 	protected static final int CLICK_TIME = 400;
 	protected static final float MAX_CLICK_DISTANCE = 25f;
@@ -88,6 +102,10 @@ public class ConsoleActivity extends Activity {
 	protected LayoutInflater inflater = null;
 
 	protected SharedPreferences prefs = null;
+
+	// determines whether or not menuitem accelerators are bound
+	// otherwise they collide with an external keyboard's CTRL-char
+	private boolean hardKeyboard = false;
 
 	protected Uri requested;
 
@@ -241,18 +259,48 @@ public class ConsoleActivity extends Activity {
 	protected void hideAllPrompts() {
 		stringPromptGroup.setVisibility(View.GONE);
 		booleanPromptGroup.setVisibility(View.GONE);
+		// adjust screen size if it was changed during prompt input
+		View view = findCurrentView(R.id.console_flip);
+		if(!(view instanceof TerminalView)) return;
+		((TerminalView)view).bridge.parentChanged((TerminalView)view);
 	}
 
+	// more like configureLaxMode -- enable network IO on UI thread
+	private void configureStrictMode() {
+		try {
+			Class.forName("android.os.StrictMode");
+			StrictModeSetup.run();
+		} catch (ClassNotFoundException e) {
+		}
+	}
 	@Override
 	public void onCreate(Bundle icicle) {
 		super.onCreate(icicle);
+		configureStrictMode();
+		hardKeyboard = getResources().getConfiguration().keyboard ==
+				Configuration.KEYBOARD_QWERTY;
+
+        hardKeyboard = hardKeyboard && !Build.MODEL.startsWith("Transformer");
+
+		prefs = PreferenceManager.getDefaultSharedPreferences(this);
+		if (!prefs.getBoolean(PreferenceConstants.ACTIONBAR, true)) {
+			requestWindowFeature(Window.FEATURE_ACTION_BAR_OVERLAY);
+		}
 
 		this.setContentView(R.layout.act_console);
 
-		ExceptionHandler.register(this);
-
 		clipboard = (ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
-		prefs = PreferenceManager.getDefaultSharedPreferences(this);
+
+		// hide action bar if requested by user
+		try {
+            ActionBar actionBar = getActionBar();
+			if (!prefs.getBoolean(PreferenceConstants.ACTIONBAR, true)) {
+				actionBar.hide();
+			}
+		} catch (NoSuchMethodError error) {
+			Log.w(TAG, "Android sdk version pre 11.	Not touching ActionBar.");
+		}
+
 
 		// hide status bar if requested by user
 		if (prefs.getBoolean(PreferenceConstants.FULLSCREEN, false)) {
@@ -334,6 +382,13 @@ public class ConsoleActivity extends Activity {
 		inputManager = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
 
 		final RelativeLayout keyboardGroup = (RelativeLayout) findViewById(R.id.keyboard_group);
+        
+        if(Build.MODEL.startsWith("Transformer") &&
+           getResources().getConfiguration().keyboard == Configuration.KEYBOARD_QWERTY &&
+           prefs.getBoolean(PreferenceConstants.ACTIONBAR, true)) {
+                keyboardGroup.setEnabled(false);
+                keyboardGroup.setVisibility(View.INVISIBLE);
+        }
 
 		mKeyboardButton = (ImageView) findViewById(R.id.button_keyboard);
 		mKeyboardButton.setOnClickListener(new OnClickListener() {
@@ -371,13 +426,14 @@ public class ConsoleActivity extends Activity {
 				final TerminalView terminal = (TerminalView)flip;
 				Thread promptThread = new Thread(new Runnable() {
 						public void run() {
-							String inj = getCurrentPromptHelper().requestStringPrompt(null, "");
-							terminal.bridge.injectString(inj);
+                            String inj = getCurrentPromptHelper().requestStringPrompt(null, "");
+                            terminal.bridge.injectString(inj);
 						}
 					});
 				promptThread.setName("Prompt");
 				promptThread.setDaemon(true);
 				promptThread.start();
+
 				keyboardGroup.setVisibility(View.GONE);
 			}
 		});
@@ -416,8 +472,8 @@ public class ConsoleActivity extends Activity {
 				new ICBSimpleOnGestureListener(this));
 
 		flip.setLongClickable(true);
-		flip.setOnTouchListener(new ICBOnTouchListener(this, keyboardGroup, detect));
-
+		ActionBar actionBar = prefs.getBoolean(PreferenceConstants.ACTIONBAR, true) ? null : getActionBar();
+		flip.setOnTouchListener(new ICBOnTouchListener(this, keyboardGroup, actionBar, detect));
 	}
 
 	/**
@@ -467,8 +523,107 @@ public class ConsoleActivity extends Activity {
 
 		menu.setQwertyMode(true);
 
+        MenuItem ctrlKey = menu.add("Ctrl");
+        ctrlKey.setEnabled(activeTerminal);
+        ctrlKey.setIcon(R.drawable.button_ctrl)         ;
+        ctrlKey.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        ctrlKey.setOnMenuItemClickListener(new OnMenuItemClickListener() {
+            @Override
+            public boolean onMenuItemClick(MenuItem menuItem) {
+                View flip = findCurrentView(R.id.console_flip);
+                if (flip == null) return false;
+
+                TerminalView terminal = (TerminalView)flip;
+
+                TerminalKeyListener handler = terminal.bridge.getKeyHandler();
+                handler.metaPress(TerminalKeyListener.META_CTRL_ON);
+                terminal.bridge.tryKeyVibrate();
+                return true;
+            }
+        });
+
+        MenuItem escKey = menu.add("Esc");
+        escKey.setEnabled(activeTerminal);
+        escKey.setIcon(R.drawable.button_esc);
+        escKey.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        escKey.setOnMenuItemClickListener(new OnMenuItemClickListener() {
+            @Override
+            public boolean onMenuItemClick(MenuItem menuItem) {
+                View flip = findCurrentView(R.id.console_flip);
+                if (flip == null) return false;
+
+                TerminalView terminal = (TerminalView)flip;
+
+                TerminalKeyListener handler = terminal.bridge.getKeyHandler();
+                handler.sendEscape();
+                terminal.bridge.tryKeyVibrate();
+                return true;
+            }
+        });
+
+        MenuItem symKey = menu.add("SYM");
+        symKey.setEnabled(activeTerminal);
+        symKey.setIcon(R.drawable.button_sym);
+        symKey.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        symKey.setOnMenuItemClickListener(new OnMenuItemClickListener() {
+            @Override
+            public boolean onMenuItemClick(MenuItem menuItem) {
+                View flip = findCurrentView(R.id.console_flip);
+                if (flip == null) return false;
+
+                TerminalView terminal = (TerminalView)flip;
+
+                TerminalKeyListener handler = terminal.bridge.getKeyHandler();
+                handler.showCharPickerDialog(terminal);
+                return true;
+            }
+        });
+        
+        MenuItem inputButton = menu.add("Input");
+        inputButton.setEnabled(activeTerminal);
+        inputButton.setIcon(R.drawable.button_input);
+        inputButton.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        inputButton.setOnMenuItemClickListener(new OnMenuItemClickListener() {
+            @Override
+            public boolean onMenuItemClick(MenuItem menuItem) {
+                View flip = findCurrentView(R.id.console_flip);
+                if (flip == null)
+                    return false;
+
+                final TerminalView terminal = (TerminalView)flip;
+                Thread promptThread = new Thread(new Runnable() {
+                    public void run() {
+                        String inj = getCurrentPromptHelper().requestStringPrompt(null, "");
+                        terminal.bridge.injectString(inj);
+                    }
+                });
+                promptThread.setName("Prompt");
+                promptThread.setDaemon(true);
+                promptThread.start();
+                return true;
+            }
+        });
+
+        MenuItem keyboard = menu.add("Show Keyboard");
+        keyboard.setEnabled(activeTerminal);
+        keyboard.setIcon(R.drawable.button_keyboard);
+        keyboard.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        keyboard.setOnMenuItemClickListener(new OnMenuItemClickListener() {
+            @Override
+            public boolean onMenuItemClick(MenuItem menuItem) {
+                View flip = findCurrentView(R.id.console_flip);
+                if (flip == null)
+                    return false;
+
+                inputManager.showSoftInput(flip, InputMethodManager.SHOW_FORCED);
+                return true;
+            }
+        });
+        
+
 		disconnect = menu.add(R.string.list_host_disconnect);
-		disconnect.setAlphabeticShortcut('w');
+		if (hardKeyboard)
+			disconnect.setAlphabeticShortcut('w');
 		if (!sessionOpen && disconnected)
 			disconnect.setTitle(R.string.console_menu_close);
 		disconnect.setEnabled(activeTerminal);
@@ -480,12 +635,17 @@ public class ConsoleActivity extends Activity {
 				TerminalBridge bridge = terminalView.bridge;
 
 				bridge.dispatchDisconnect(true);
+
+                if( bound != null ) {
+                    bound.lockUnusedKeys();
+                }
 				return true;
 			}
 		});
 
 		copy = menu.add(R.string.console_menu_copy);
-		copy.setAlphabeticShortcut('c');
+		if (hardKeyboard)
+			copy.setAlphabeticShortcut('c');
 		copy.setIcon(android.R.drawable.ic_menu_set_as);
 		copy.setEnabled(activeTerminal);
 		copy.setOnMenuItemClickListener(new OnMenuItemClickListener() {
@@ -511,7 +671,8 @@ public class ConsoleActivity extends Activity {
 		});
 
 		paste = menu.add(R.string.console_menu_paste);
-		paste.setAlphabeticShortcut('v');
+		if (hardKeyboard)
+			paste.setAlphabeticShortcut('v');
 		paste.setIcon(android.R.drawable.ic_menu_edit);
 		paste.setEnabled(clipboard.hasText() && sessionOpen);
 		paste.setOnMenuItemClickListener(new OnMenuItemClickListener() {
@@ -530,7 +691,8 @@ public class ConsoleActivity extends Activity {
 		});
 
 		portForward = menu.add(R.string.console_menu_portforwards);
-		portForward.setAlphabeticShortcut('f');
+		if (hardKeyboard)
+			portForward.setAlphabeticShortcut('f');
 		portForward.setIcon(android.R.drawable.ic_menu_manage);
 		portForward.setEnabled(sessionOpen && canForwardPorts);
 		portForward.setOnMenuItemClickListener(new OnMenuItemClickListener() {
@@ -546,7 +708,8 @@ public class ConsoleActivity extends Activity {
 		});
 
 		urlscan = menu.add(R.string.console_menu_urlscan);
-		urlscan.setAlphabeticShortcut('u');
+		if (hardKeyboard)
+			urlscan.setAlphabeticShortcut('u');
 		urlscan.setIcon(android.R.drawable.ic_menu_search);
 		urlscan.setEnabled(activeTerminal);
 		urlscan.setOnMenuItemClickListener(new OnMenuItemClickListener() {
@@ -561,27 +724,65 @@ public class ConsoleActivity extends Activity {
 		});
 
 		resize = menu.add(R.string.console_menu_resize);
-		resize.setAlphabeticShortcut('s');
+		if (hardKeyboard)
+			resize.setAlphabeticShortcut('s');
 		resize.setIcon(android.R.drawable.ic_menu_crop);
 		resize.setEnabled(sessionOpen);
 		resize.setOnMenuItemClickListener(new OnMenuItemClickListener() {
 			public boolean onMenuItemClick(MenuItem item) {
-				int width = new Integer(prefs.getString("force_width", "0"));
-				int height = new Integer(prefs.getString("force_height", "0"));
+				final TerminalView terminalView = (TerminalView) findCurrentView(R.id.console_flip);
 
-				if(width > 0 && height > 0) {
-					terminalView.forceSize(width, height);
-					terminalView.forceSize(width, height);
-				} else {
-					new AlertDialog.Builder(ConsoleActivity.this)
-						.setMessage("Goto settings and add width/height values.")
-						.setTitle("No configuration")
-						.show();
-				}
+				final View resizeView = inflater.inflate(R.layout.dia_resize, null, false);
+				((EditText) resizeView.findViewById(R.id.width))
+					.setText(prefs.getString("default_fsize_width", "80"));
+				((EditText) resizeView.findViewById(R.id.height))
+					.setText(prefs.getString("default_fsize_height", "25"));
+
+				new AlertDialog.Builder(ConsoleActivity.this)
+					.setView(resizeView)
+					.setPositiveButton(R.string.button_resize, new DialogInterface.OnClickListener() {
+						public void onClick(DialogInterface dialog, int which) {
+							int width, height;
+							try {
+								width = Integer.parseInt(((EditText) resizeView
+										.findViewById(R.id.width))
+										.getText().toString());
+								height = Integer.parseInt(((EditText) resizeView
+										.findViewById(R.id.height))
+										.getText().toString());
+							} catch (NumberFormatException nfe) {
+								// TODO change this to a real dialog where we can
+								// make the input boxes turn red to indicate an error.
+								return;
+							}
+							if (width > 0 && height > 0) {
+								terminalView.forceSize(width, height);
+								terminalView.bridge.parentChanged(terminalView);
+                            } else {
+								new AlertDialog.Builder(ConsoleActivity.this)
+									.setMessage("Width and height must be higher than zero.")
+									.setTitle("Error")
+									.show();
+							}
+						}
+					}).setNegativeButton(android.R.string.cancel, null).create().show();
 
 				return true;
 			}
 		});
+
+        MenuItem keys = menu.add(R.string.console_menu_pubkeys);
+        keys.setIcon(android.R.drawable.ic_lock_lock);
+        keys.setIntent(new Intent(this, PubkeyListActivity.class));
+        keys.setEnabled(activeTerminal);
+        keys.setOnMenuItemClickListener(new OnMenuItemClickListener() {
+            public boolean onMenuItemClick(MenuItem item) {
+                Intent intent = new Intent(ConsoleActivity.this, PubkeyListActivity.class);
+                intent.putExtra(PubkeyListActivity.PICK_MODE, true);
+                ConsoleActivity.this.startActivityForResult(intent, REQUEST_SELECT);
+                return true;
+            }
+        });
 
 		return true;
 	}
@@ -953,4 +1154,51 @@ public class ConsoleActivity extends Activity {
 		}
 	}
 
+    /*
+    * (non-Javadoc)
+    *
+    * @see android.app.Activity#onActivityResult(int, int, android.content.Intent)
+    */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        switch (requestCode) {
+            case REQUEST_SELECT:
+                if (resultCode == Activity.RESULT_OK) {
+                    long pubkeyId = data.getLongExtra( PubkeyListActivity.PICKED_PUBKEY_ID, -1 );
+                    PubkeyDatabase pubkeyDatabase = new PubkeyDatabase(this);
+                    PubkeyBean pubkey = pubkeyDatabase.findPubkeyById(pubkeyId);
+                    setupPublicKey( pubkey );
+                }
+                break;
+            default:
+                super.onActivityResult(requestCode, resultCode, data);
+                break;
+
+        }
+    }
+
+
+    /**
+     * @param pubkey
+     */
+    private void setupPublicKey(PubkeyBean pubkey) {
+        Log.d(TAG, "setupPublicKey, pubKey=" + pubkey.getNickname());
+
+        try {
+            PublicKey pk = PubkeyUtils.decodePublic(pubkey.getPublicKey(), pubkey.getType());
+            String openSSHPubkey = PubkeyUtils.convertToOpenSSHFormat(pk, pubkey.getNickname());
+
+            final TerminalView terminal = (TerminalView) findCurrentView(R.id.console_flip);
+            terminal.bridge.injectString("mkdir .ssh -pm 700 ; echo " + openSSHPubkey + " >> ~/.ssh/authorized_keys");
+        } catch (InvalidKeyException e) {
+            Log.e(TAG, e.getMessage(), e);
+        } catch (NoSuchAlgorithmException e) {
+            Log.e(TAG, e.getMessage(), e);
+        } catch (InvalidKeySpecException e) {
+            Log.e(TAG, e.getMessage(), e);
+        } catch (IOException e) {
+            Log.e(TAG, e.getMessage(), e);
+        }
+
+    }
 }

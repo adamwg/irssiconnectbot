@@ -22,8 +22,10 @@ import android.content.DialogInterface;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
+import android.util.Log;
 import android.view.ViewConfiguration;
 import de.mud.terminal.vt320;
+import org.woltage.irssiconnectbot.service.TerminalKeyListener;
 
 class ICBSimpleOnGestureListener extends GestureDetector.SimpleOnGestureListener {
 	private float totalY = 0;
@@ -149,14 +151,14 @@ class ICBSimpleOnGestureListener extends GestureDetector.SimpleOnGestureListener
 			 */
 	@Override
 	public void onLongPress(MotionEvent e) {
-		if(consoleActivity.prefs.getBoolean("longPressMenu", false)) {
+		if(consoleActivity.prefs.getBoolean("longPressMenu", true)) {
 			View flip = consoleActivity.findCurrentView(R.id.console_flip);
 			if (flip == null) return;
 			TerminalView terminal = (TerminalView) flip;
 
 			terminal.bridge.tryKeyVibrate();
 
-			final CharSequence[] items = { "Alt+?", "TAB", "Ctrl+a", "Ctrl+a+d", "Ctrl+d", "Ctrl+c" };
+			final CharSequence[] items = { "Alt+?", "TAB",  "Ctrl+?"};
 
 			AlertDialog.Builder builder = new AlertDialog.Builder(consoleActivity);
 			builder.setTitle("Send an action");
@@ -174,18 +176,9 @@ class ICBSimpleOnGestureListener extends GestureDetector.SimpleOnGestureListener
 								((vt320) terminal.bridge.buffer).write(0x09);
 								terminal.bridge.tryKeyVibrate();
 							} else if (item == 2) {
-								((vt320) terminal.bridge.buffer).write(0x01);
-								terminal.bridge.tryKeyVibrate();
-							} else if (item == 3) {
-								((vt320) terminal.bridge.buffer).write(0x01);
-								((vt320) terminal.bridge.buffer).write('d');
-								terminal.bridge.tryKeyVibrate();
-							} else if (item == 4) {
-								((vt320) terminal.bridge.buffer).write(0x04);
-								terminal.bridge.tryKeyVibrate();
-							} else if (item == 5) {
-								((vt320) terminal.bridge.buffer).write(0x03);
-								terminal.bridge.tryKeyVibrate();
+                                TerminalKeyListener handler = terminal.bridge.getKeyHandler();
+                                handler.metaPress(TerminalKeyListener.META_CTRL_ON);
+                                terminal.bridge.tryKeyVibrate();
 							}
 						}
 					});

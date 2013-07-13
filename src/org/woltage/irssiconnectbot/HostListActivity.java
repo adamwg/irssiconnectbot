@@ -165,7 +165,7 @@ public class HostListActivity extends ListActivity {
 				getResources().getText(R.string.app_name),
 				getResources().getText(R.string.title_hosts_list)));
 
-		ExceptionHandler.register(this);
+
 
 		// check for eula agreement
 		this.prefs = PreferenceManager.getDefaultSharedPreferences(this);
@@ -401,6 +401,9 @@ public class HostListActivity extends ListActivity {
 							HostListActivity.this)));
 			return false;
 		}
+
+		if (hostdb == null)
+			hostdb = new HostDatabase(this);
 
 		HostBean host = TransportFactory.findHost(hostdb, uri);
 		if (host == null) {

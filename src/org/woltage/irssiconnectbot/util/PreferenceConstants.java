@@ -68,6 +68,8 @@ public class PreferenceConstants {
 
 	public static final String BUMPY_ARROWS = "bumpyarrows";
 
+	public static final String ACTIONBAR = "actionbarsetting";
+
 	public static final String EULA = "eula";
 
 	public static final String SORT_BY_COLOR = "sortByColor";
@@ -76,6 +78,7 @@ public class PreferenceConstants {
 	public static final String BELL_VOLUME = "bellVolume";
 	public static final String BELL_VIBRATE = "bellVibrate";
 	public static final String BELL_NOTIFICATION = "bellNotification";
+	public static final String BELL_NOTIFICATION_SOUND = "bellNotificationSound";
 	public static final float DEFAULT_BELL_VOLUME = 0.25f;
 
 	public static final String CONNECTION_PERSIST = "connPersist";

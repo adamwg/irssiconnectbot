@@ -17,6 +17,9 @@
 
 package org.woltage.irssiconnectbot.service;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+
 import org.woltage.irssiconnectbot.ConsoleActivity;
 import org.woltage.irssiconnectbot.R;
 import org.woltage.irssiconnectbot.bean.HostBean;
@@ -60,7 +63,7 @@ public abstract class ConnectionNotifier {
 		return notification;
 	}
 
-	protected Notification newActivityNotification(Context context, HostBean host) {
+	protected Notification newActivityNotification(Context context, HostBean host, boolean sound) {
 		Notification notification = newNotification(context);
 
 		Resources res = context.getResources();
@@ -79,7 +82,7 @@ public abstract class ConnectionNotifier {
 
 		notification.flags = Notification.FLAG_AUTO_CANCEL;
 
-		notification.flags |= Notification.DEFAULT_LIGHTS;
+		notification.defaults |= Notification.DEFAULT_LIGHTS;
 		if (HostDatabase.COLOR_RED.equals(host.getColor()))
 			notification.ledARGB = Color.RED;
 		else if (HostDatabase.COLOR_GREEN.equals(host.getColor()))
@@ -91,6 +94,8 @@ public abstract class ConnectionNotifier {
 		notification.ledOnMS = 300;
 		notification.ledOffMS = 1000;
 		notification.flags |= Notification.FLAG_SHOW_LIGHTS;
+		if (sound)
+			notification.defaults |= Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE;
 
 		return notification;
 	}
@@ -116,8 +121,8 @@ public abstract class ConnectionNotifier {
 		return notification;
 	}
 
-	public void showActivityNotification(Service context, HostBean host) {
-		getNotificationManager(context).notify(ACTIVITY_NOTIFICATION, newActivityNotification(context, host));
+	public void showActivityNotification(Service context, HostBean host, boolean sound) {
+		getNotificationManager(context).notify(ACTIVITY_NOTIFICATION, newActivityNotification(context, host, sound));
 	}
 
 	public void hideActivityNotification(Service context) {
@@ -128,20 +133,46 @@ public abstract class ConnectionNotifier {
 	public abstract void hideRunningNotification(Service context);
 
 	private static class PreEclair extends ConnectionNotifier {
+		private static final Class<?>[] setForegroundSignature = new Class[] {boolean.class};
+		private Method setForeground = null;
+
 		private static class Holder {
 			private static final PreEclair sInstance = new PreEclair();
 		}
 
+		public PreEclair() {
+			try {
+				setForeground = Service.class.getMethod("setForeground", setForegroundSignature);
+			} catch (Exception e) {
+			}
+		}
+
 		@Override
 		public void showRunningNotification(Service context) {
-			context.setForeground(true);
-			getNotificationManager(context).notify(ONLINE_NOTIFICATION, newRunningNotification(context));
+			if (setForeground != null) {
+				Object[] setForegroundArgs = new Object[1];
+				setForegroundArgs[0] = Boolean.TRUE;
+				try {
+					setForeground.invoke(context, setForegroundArgs);
+				} catch (InvocationTargetException e) {
+				} catch (IllegalAccessException e) {
+				}
+				getNotificationManager(context).notify(ONLINE_NOTIFICATION, newRunningNotification(context));
+			}
 		}
 
 		@Override
 		public void hideRunningNotification(Service context) {
-			context.setForeground(false);
-			getNotificationManager(context).cancel(ONLINE_NOTIFICATION);
+			if (setForeground != null) {
+				Object[] setForegroundArgs = new Object[1];
+				setForegroundArgs[0] = Boolean.FALSE;
+				try {
+					setForeground.invoke(context, setForegroundArgs);
+				} catch (InvocationTargetException e) {
+				} catch (IllegalAccessException e) {
+				}
+				getNotificationManager(context).cancel(ONLINE_NOTIFICATION);
+			}
 		}
 	}
 

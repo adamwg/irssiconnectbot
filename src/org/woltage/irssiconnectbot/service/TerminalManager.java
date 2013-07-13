@@ -21,13 +21,7 @@ import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.security.PrivateKey;
 import java.security.PublicKey;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.*;
 import java.util.Map.Entry;
 
 import org.woltage.irssiconnectbot.R;
@@ -35,6 +29,7 @@ import org.woltage.irssiconnectbot.bean.HostBean;
 import org.woltage.irssiconnectbot.bean.PubkeyBean;
 import org.woltage.irssiconnectbot.transport.TransportFactory;
 import org.woltage.irssiconnectbot.util.HostDatabase;
+import org.woltage.irssiconnectbot.util.KeyUtils;
 import org.woltage.irssiconnectbot.util.PreferenceConstants;
 import org.woltage.irssiconnectbot.util.PubkeyDatabase;
 import org.woltage.irssiconnectbot.util.PubkeyUtils;
@@ -140,11 +135,7 @@ public class TerminalManager extends Service implements BridgeDisconnectedListen
 
 		for (PubkeyBean pubkey : pubkeys) {
 			try {
-				PrivateKey privKey = PubkeyUtils.decodePrivate(pubkey.getPrivateKey(), pubkey.getType());
-				PublicKey pubKey = PubkeyUtils.decodePublic(pubkey.getPublicKey(), pubkey.getType());
-				Object trileadKey = PubkeyUtils.convertToTrilead(privKey, pubKey);
-
-				addKey(pubkey, trileadKey);
+				addKey(pubkey, KeyUtils.DecodeKey(pubkey, null));
 			} catch (Exception e) {
 				Log.d(TAG, String.format("Problem adding key '%s' to in-memory cache", pubkey.getNickname()), e);
 			}
@@ -215,6 +206,29 @@ public class TerminalManager extends Service implements BridgeDisconnectedListen
 			// disconnect and dispose of any existing bridges
 			for (int i = 0; i < tmpBridges.length; i++)
 				tmpBridges[i].dispatchDisconnect(immediate);
+		}
+	}
+
+	/**
+	 * Disconnect all currently connected bridges, except the local ones,
+     * used with connectivity changes.
+	 */
+	private void disconnectAllExceptLocal(final boolean immediate) {
+		TerminalBridge[] tmpBridges = null;
+
+		synchronized (bridges) {
+			if (bridges.size() > 0) {
+				tmpBridges = bridges.toArray(new TerminalBridge[bridges.size()]);
+			}
+		}
+
+		if (tmpBridges != null) {
+			// disconnect and dispose of any existing bridges except locals.
+			for (int i = 0; i < tmpBridges.length; i++) {
+                if( ! "local".equals( tmpBridges[i].transport.getHostProtocol() ) ) {
+                    tmpBridges[i].dispatchDisconnect(immediate);
+                }
+            }
 		}
 	}
 
@@ -471,7 +485,22 @@ public class TerminalManager extends Service implements BridgeDisconnectedListen
 		}
 	}
 
-	public class TerminalBinder extends Binder {
+    /**
+     * locks the keys if terminals are disconnected
+     */
+    public void lockUnusedKeys() {
+        if (bridges.size() == 0 && mPendingReconnect.size() == 0) {
+            // terminals are disconnected with no reconnecting requested
+            if( loadedKeypairs != null && loadedKeypairs.size() > 0 ) {
+                Collection<String> nicknames = new HashSet<String>(loadedKeypairs.keySet());
+                for( String nickname : nicknames ) {
+                    removeKey(nickname);
+                }
+            }
+        }
+    }
+
+    public class TerminalBinder extends Binder {
 		public TerminalManager getService() {
 			return TerminalManager.this;
 		}
@@ -598,7 +627,7 @@ public class TerminalManager extends Service implements BridgeDisconnectedListen
 		if (!prefs.getBoolean(PreferenceConstants.BELL_NOTIFICATION, false))
 			return;
 
-		ConnectionNotifier.getInstance().showActivityNotification(this, host);
+		ConnectionNotifier.getInstance().showActivityNotification(this, host, prefs.getBoolean(PreferenceConstants.BELL_NOTIFICATION_SOUND, false));
 	}
 
 	/* (non-Javadoc)
@@ -660,7 +689,7 @@ public class TerminalManager extends Service implements BridgeDisconnectedListen
 		final Thread t = new Thread() {
 			@Override
 			public void run() {
-				disconnectAll(false);
+				disconnectAllExceptLocal(false);
 			}
 		};
 		t.setName("Disconnector");

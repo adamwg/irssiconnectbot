@@ -66,7 +66,8 @@
 	</PreferenceCategory>
 
 	<PreferenceCategory
-		android:title="@string/pref_ui_category">
+		android:title="@string/pref_ui_category"
+    android:key="pref_ui_category">
 
 		<ListPreference
 			android:key="rotation"
@@ -122,6 +123,14 @@
 			android:summary="@string/pref_bumpyarrows_summary"
 			android:defaultValue="true"
 			/>
+
+    <CheckBoxPreference
+      android:key="actionbarsetting"
+      android:title="@string/pref_actionbar_title"
+      android:summary="@string/pref_actionbar_summary"
+      android:defaultValue="true"
+      />
+    
 	</PreferenceCategory>
 
 	<PreferenceCategory
@@ -150,6 +159,7 @@
 			android:summary="@string/pref_bell_notification_summary"
 			android:defaultValue="false"
 			/>
+		<CheckBoxPreference android:key="bellNotificationSound" android:summary="@string/pref_bell_notification_sound_summary" android:title="@string/pref_bell_notification_sound_title"/>
 
 	</PreferenceCategory>
 	<ListPreference
@@ -175,16 +185,39 @@
 		android:entryValues="@array/list_desirez_fixes_values"
 		android:defaultValue="false"
 		android:key="htcDesireZfix"/>
+
+    <ListPreference
+    		android:key="searchbutton"
+    		android:title="@string/pref_searchbutton"
+    		android:entries="@array/list_searchbutton"
+    		android:entryValues="@array/list_searchbutton_values"
+    		android:summary="@string/pref_searchbutton_summary"
+    		android:defaultValue="urlscan"
+    		/>
+	<CheckBoxPreference
+		android:key="xperiaProFix"
+		android:title="@string/pref_xperiapro_title"
+		android:summary="@string/pref_xperiapro_summary"
+		android:defaultValue="false"
+		/>
 		
 	<PreferenceCategory
-		android:title="@string/pref_force_size">		
+		android:title="@string/pref_default_fsize_category">
+
 		<EditTextPreference
-	   		android:key="force_width"
-	   		android:title="@string/force_size_width"
-	   		/>
+			android:key="default_fsize_width"
+			android:title="@string/pref_default_fsize_width"
+			android:summary="@string/pref_default_fsize_width_summary"
+			android:defaultValue="80"
+			android:numeric="integer"
+			/>
+
 		<EditTextPreference
-	   		android:key="force_height"
-	   		android:title="@string/force_size_height"
-	   		/>
-   	</PreferenceCategory>
+			android:key="default_fsize_height"
+			android:title="@string/pref_default_fsize_height"
+			android:summary="@string/pref_default_fsize_height_summary"
+			android:defaultValue="25"
+			android:numeric="integer"
+			/>
+	</PreferenceCategory>
 </PreferenceScreen>

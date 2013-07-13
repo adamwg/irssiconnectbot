@@ -31,6 +31,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
 import android.content.res.Configuration;
+import android.os.Build;
 import android.net.Uri;
 import android.preference.PreferenceManager;
 import android.text.ClipboardManager;
@@ -44,10 +45,12 @@ import android.view.View;
 import android.view.View.OnKeyListener;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemClickListener;
+import android.widget.AdapterView.OnItemLongClickListener;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ListView;
 import android.widget.TextView;
+import android.widget.Toast;
 import de.mud.terminal.VDUBuffer;
 import de.mud.terminal.vt320;
 
@@ -55,6 +58,7 @@ import de.mud.terminal.vt320;
  * @author kenny
  *
  */
+@SuppressWarnings("deprecation") // for ClipboardManager
 public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceChangeListener {
 	private static final String TAG = "ConnectBot.OnKeyListener";
 
@@ -72,6 +76,12 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 	public final static int META_ALT_MASK = META_ALT_ON | META_ALT_LOCK;
 	public final static int META_SHIFT_MASK = META_SHIFT_ON | META_SHIFT_LOCK;
 
+	// backport constants from api level 11
+	public final static int KEYCODE_ESCAPE = 111;
+	public final static int HC_META_CTRL_ON = 4096;
+	public final static int KEYCODE_PAGE_UP = 92;
+	public final static int KEYCODE_PAGE_DOWN = 93;
+
 	// All the transient key codes
 	public final static int META_TRANSIENT = META_CTRL_ON | META_ALT_ON
 			| META_SHIFT_ON;
@@ -80,8 +90,6 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 	private final TerminalBridge bridge;
 	private final VDUBuffer buffer;
 
-	protected KeyCharacterMap keymap = KeyCharacterMap.load(KeyCharacterMap.BUILT_IN_KEYBOARD);
-
 	private String keymode = null;
 	private boolean hardKeyboard = false;
 
@@ -89,7 +97,10 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 
 	private int mDeadKey = 0;
 
+	// TODO add support for the new API.
 	private ClipboardManager clipboard = null;
+
+	private boolean selectingForCopy = false;
 	private final SelectionArea selectionArea;
 
 	private String encoding;
@@ -112,6 +123,8 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 
 		hardKeyboard = (manager.res.getConfiguration().keyboard
 				== Configuration.KEYBOARD_QWERTY);
+
+        hardKeyboard = hardKeyboard && !Build.MODEL.startsWith("Transformer");
 
 		updateKeymode();
 	}
@@ -192,6 +205,7 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 			}
 
 			int curMetaState = event.getMetaState();
+			final int orgMetaState = curMetaState;
 
 			if ((metaState & META_SHIFT_MASK) != 0) {
 				curMetaState |= KeyEvent.META_SHIFT_ON;
@@ -202,6 +216,11 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 			}
 
 			int key = event.getUnicodeChar(curMetaState);
+			// no hard keyboard?  ALT-k should pass through to below
+//			if ((orgMetaState & KeyEvent.META_ALT_ON) != 0 &&
+//					(!hardKeyboard || hardKeyboardHidden)) {
+//				key = 0;
+//			}
 
 			if ((key & KeyCharacterMap.COMBINING_ACCENT) != 0) {
 				mDeadKey = key & KeyCharacterMap.COMBINING_ACCENT_MASK;
@@ -216,15 +235,14 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 			final boolean printing = (key != 0 && keyCode != KeyEvent.KEYCODE_ENTER);
 
 			//Show up the CharacterPickerDialog when the SYM key is pressed
-			if( (keyCode == KeyEvent.KEYCODE_SYM || key == KeyCharacterMap.PICKER_DIALOG_INPUT) && v != null) {
+			if( (keyCode == KeyEvent.KEYCODE_SYM || keyCode == KeyEvent.KEYCODE_PICTSYMBOLS ||
+					key == KeyCharacterMap.PICKER_DIALOG_INPUT) && v != null) {
             	showCharPickerDialog(v);
             	if(metaState == 4) { // reset fn-key state
             		metaState = 0;
             		bridge.redraw();
             	}
             	return true;
-    		}else if(keyCode == KeyEvent.KEYCODE_SEARCH) {
-    			urlScan(v);
     		}
 
 			// otherwise pass through to existing session
@@ -249,22 +267,11 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 							&& sendFunctionKey(keyCode))
 						return true;
 
-					// Support CTRL-a through CTRL-z
-					if (key >= 0x61 && key <= 0x7A)
-						key -= 0x60;
-					// Support CTRL-A through CTRL-_
-					else if (key >= 0x41 && key <= 0x5F)
-						key -= 0x40;
-					// CTRL-space sends NULL
-					else if (key == 0x20)
-						key = 0x00;
-					// CTRL-? sends DEL
-					else if (key == 0x3F)
-						key = 0x7F;
+					key = keyAsControl(key);
 				}
 
 				// handle pressing f-keys
-				if ((hardKeyboard && !hardKeyboardHidden)
+                if ((hardKeyboard && !hardKeyboardHidden)
 						&& (curMetaState & KeyEvent.META_SHIFT_ON) != 0
 						&& sendFunctionKey(keyCode))
 					return true;
@@ -282,39 +289,38 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 						 * curMetaState == 3 if FN AND shift key is pressed or locked
 						 */
 						if(curMetaState == 0) {
-							// Desire Z, lowercase if curMetaState == 0! Problem with HW keymapping?
-							if(key == 0xc4) //Ä
-								key = 0xe4; //ä
-							else if(key == 0xd6) //Ö
-								key = 0xf6; //ö
-							else if(key == 0xc5) //Å
-								key = 0xe5; //å
-							else if(key == 0xd8) { //Ø
-								if(prefs.getString("htcDesireZfix", "false").equals("true")){ // Bind's Ø to CTRL
+							// Desire Z "All fixes (Æ = Alt, Ø = Ctrl)"
+							if(prefs.getString("htcDesireZfix", "false").equals("true")){ // Bind's Ø and ø to CTRL
+								if(key == 0xd8 || key == 0xf8) {
 									metaPress(META_CTRL_ON);
 									bridge.redraw();
 									return true;
-								}else{
-									key = 0xf8; //ø
-								}
-							} else if(key == 0xc6) { //Æ
-								if(prefs.getString("htcDesireZfix", "false").equals("true")){ // Bind's Æ to ALT
+								} else if(key == 0xc6 || key == 0xe6) { // Bind's Æ and æ to ALT
 									sendEscape();
 									bridge.redraw();
 									return true;
-								}else{
-									key = 0xe6; //æ
 								}
 							}
+							// Desire Z, lowercase if curMetaState == 0! Problem with HW keymapping?
+							if(key == 0xC4) //Ä
+								key = 0xE4; //ä
+							else if(key == 0xD6) //Ö
+								key = 0xF6; //ö
+							else if(key == 0xC5) //Å
+								key = 0xE5; //å
+							else if(key == 0xD8) //Ø
+								key = 0xF8; //ø
+							else if(key == 0xC6) //Æ
+								key = 0xE6; //æ
 						}
 						else if(curMetaState == 2) {
 							// Desire Z, <>| if FN pressed or locked
-							if(key == 0xc4) //Ä
-								key = 0x3c; //<
-							else if(key == 0xd6) //Ö
-								key = 0x3e; //>
-							else if(key == 0xc5) //Å
-								key = 0x7c; //|
+							if(key == 0xC4 || key == 0xE4) //Ä or ä
+								key = 0x3C; //<
+							else if(key == 0xD6 || key == 0xF6) //Ö or ö
+								key = 0x3E; //>
+							else if(key == 0xC5 || key == 0XE5) //Å or å
+								key = 0x7C; //|
 						}
 					}
 
@@ -323,6 +329,31 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 				}
 
 				return true;
+			}
+
+			// send ctrl and meta-keys as appropriate
+            if (!hardKeyboard || hardKeyboardHidden) {
+				int k = event.getUnicodeChar(0);
+				int k0 = k;
+				boolean sendCtrl = false;
+				boolean sendMeta = false;
+				if (k != 0) {
+					if ((orgMetaState & HC_META_CTRL_ON) != 0) {
+						k = keyAsControl(k);
+						if (k != k0)
+							sendCtrl = true;
+						// send F1-F10 via CTRL-1 through CTRL-0
+						if (!sendCtrl && sendFunctionKey(keyCode))
+							return true;
+					} else if ((orgMetaState & KeyEvent.META_ALT_ON) != 0) {
+						sendMeta = true;
+						sendEscape();
+					}
+					if (sendMeta || sendCtrl) {
+						bridge.transport.write(k);
+						return true;
+					}
+				}
 			}
 
 			// try handling keymode shortcuts
@@ -380,11 +411,85 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 				}
 			}
 
+			//Handle d-pad arrows in copy mode
+			if (bridge.isSelectingForCopy()) {
+				switch(keyCode) {
+				case KeyEvent.KEYCODE_DPAD_LEFT:
+					selectionArea.decrementColumn();
+					bridge.redraw();
+					return true;
+				case KeyEvent.KEYCODE_DPAD_UP:
+					selectionArea.decrementRow();
+					bridge.redraw();
+					return true;
+				case KeyEvent.KEYCODE_DPAD_DOWN:
+					selectionArea.incrementRow();
+					bridge.redraw();
+					return true;
+				case KeyEvent.KEYCODE_DPAD_RIGHT:
+					selectionArea.incrementColumn();
+					bridge.redraw();
+					return true;
+				case KeyEvent.KEYCODE_DPAD_CENTER:
+					if (selectionArea.isSelectingOrigin())
+						selectionArea.finishSelectingOrigin();
+					else {
+						if (clipboard != null) {
+							// copy selected area to clipboard
+							String copiedText = selectionArea.copyFrom(buffer);
+
+							clipboard.setText(copiedText);
+							//Nofify user
+							((TerminalView) v).notifyUser(manager.res.getString(
+									R.string.console_copy_done,copiedText.length() ) );
+							bridge.setSelectingForCopy(false);
+							selectionArea.reset();
+						}
+					}
+					bridge.redraw();
+					return true;
+				}
+			}
+
+
 			// look for special chars
 			switch(keyCode) {
-			case KeyEvent.KEYCODE_TAB: // Support for Hard Keyboard TAB
+			case KEYCODE_ESCAPE:
+            case KeyEvent.KEYCODE_SEARCH:
+                    if(prefs.getString("searchbutton", "urlscan").equals("tab")) {
+                        bridge.transport.write(0x09);
+                    } else if(prefs.getString("searchbutton", "urlscan").equals("meta")) {
+                        sendEscape();
+                    } else {
+                        urlScan(v);
+                    }
+
+                    return true;
+			case KeyEvent.KEYCODE_TAB:
 				bridge.transport.write(0x09);
 				return true;
+			case KEYCODE_PAGE_DOWN:
+				((vt320)buffer).keyPressed(vt320.KEY_PAGE_DOWN, ' ', getStateForBuffer());
+                metaState &= ~META_TRANSIENT;
+                bridge.tryKeyVibrate();
+				return true;
+			case KEYCODE_PAGE_UP:
+				((vt320)buffer).keyPressed(vt320.KEY_PAGE_UP, ' ', getStateForBuffer());
+                metaState &= ~META_TRANSIENT;
+                bridge.tryKeyVibrate();
+				return true;
+            case KeyEvent.KEYCODE_MOVE_HOME:
+                ((vt320)buffer).keyTyped(vt320.KEY_ESCAPE, ' ', 0);
+                bridge.transport.write("[1~".getBytes());
+                metaState &= ~META_TRANSIENT;
+                bridge.tryKeyVibrate();
+                return true;
+            case KeyEvent.KEYCODE_MOVE_END:
+                ((vt320)buffer).keyTyped(vt320.KEY_ESCAPE, ' ', 0);
+                bridge.transport.write("[4~".getBytes());
+                metaState &= ~META_TRANSIENT;
+                bridge.tryKeyVibrate();
+                return true;
 			case KeyEvent.KEYCODE_CAMERA:
 				// check to see which shortcut the camera button triggers
 				String camera = manager.prefs.getString(
@@ -423,81 +528,78 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 				return true;
 
 			case KeyEvent.KEYCODE_DPAD_LEFT:
-				if (bridge.isSelectingForCopy()) {
-					selectionArea.decrementColumn();
-					bridge.redraw();
+				if ((metaState & META_ALT_MASK) != 0) {
+					((vt320) buffer).keyPressed(vt320.KEY_HOME, ' ',
+							getStateForBuffer());
 				} else {
 					((vt320) buffer).keyPressed(vt320.KEY_LEFT, ' ',
 							getStateForBuffer());
-					metaState &= ~META_TRANSIENT;
-					bridge.tryKeyVibrate();
 				}
+				metaState &= ~META_TRANSIENT;
+				bridge.tryKeyVibrate();
 				return true;
-
 			case KeyEvent.KEYCODE_DPAD_UP:
-				if (bridge.isSelectingForCopy()) {
-					selectionArea.decrementRow();
-					bridge.redraw();
+				if ((metaState & META_ALT_MASK) != 0) {
+					((vt320)buffer).keyPressed(vt320.KEY_PAGE_UP, ' ',
+							getStateForBuffer());
 				} else {
 					((vt320) buffer).keyPressed(vt320.KEY_UP, ' ',
 							getStateForBuffer());
-					metaState &= ~META_TRANSIENT;
-					bridge.tryKeyVibrate();
 				}
+				metaState &= ~META_TRANSIENT;
+				bridge.tryKeyVibrate();
 				return true;
-
 			case KeyEvent.KEYCODE_DPAD_DOWN:
-				if (bridge.isSelectingForCopy()) {
-					selectionArea.incrementRow();
-					bridge.redraw();
+				if ((metaState & META_ALT_MASK) != 0) {
+					((vt320)buffer).keyPressed(vt320.KEY_PAGE_DOWN, ' ',
+							getStateForBuffer());
 				} else {
 					((vt320) buffer).keyPressed(vt320.KEY_DOWN, ' ',
 							getStateForBuffer());
-					metaState &= ~META_TRANSIENT;
-					bridge.tryKeyVibrate();
 				}
+				metaState &= ~META_TRANSIENT;
+				bridge.tryKeyVibrate();
 				return true;
-
 			case KeyEvent.KEYCODE_DPAD_RIGHT:
-				if (bridge.isSelectingForCopy()) {
-					selectionArea.incrementColumn();
-					bridge.redraw();
+				if ((metaState & META_ALT_MASK) != 0) {
+					((vt320) buffer).keyPressed(vt320.KEY_END, ' ',
+							getStateForBuffer());
 				} else {
 					((vt320) buffer).keyPressed(vt320.KEY_RIGHT, ' ',
 							getStateForBuffer());
-					metaState &= ~META_TRANSIENT;
-					bridge.tryKeyVibrate();
 				}
+				metaState &= ~META_TRANSIENT;
+				bridge.tryKeyVibrate();
 				return true;
-
 			case KeyEvent.KEYCODE_DPAD_CENTER:
-				if (bridge.isSelectingForCopy()) {
-					if (selectionArea.isSelectingOrigin())
-						selectionArea.finishSelectingOrigin();
-					else {
-						if (clipboard != null) {
-							// copy selected area to clipboard
-							String copiedText = selectionArea.copyFrom(buffer);
-
-							clipboard.setText(copiedText);
-							//Nofify user
-							((TerminalView) v).notifyUser(manager.res.getString(
-									R.string.console_copy_done,copiedText.length() ) );
-							bridge.setSelectingForCopy(false);
-							selectionArea.reset();
-						}
-					}
-				} else {
-					if ((metaState & META_CTRL_ON) != 0) {
-						sendEscape();
-						metaState &= ~META_CTRL_ON;
-					} else
-						metaPress(META_CTRL_ON);
-				}
-
+			case KeyEvent.KEYCODE_SWITCH_CHARSET:
+				if (keyCode == KeyEvent.KEYCODE_SWITCH_CHARSET && !prefs.getBoolean("xperiaProFix", false))
+					return true;
+				if ((metaState & META_CTRL_ON) != 0) {
+					sendEscape();
+					metaState &= ~META_CTRL_ON;
+				} else
+					metaPress(META_CTRL_ON);
 				bridge.redraw();
-
 				return true;
+
+			case KeyEvent.KEYCODE_S:
+				if(prefs.getBoolean("xperiaProFix", false)) {
+					bridge.transport.write('|');
+					metaState &= ~META_TRANSIENT;
+					bridge.redraw();
+					return true;
+				}
+				break;
+
+			case KeyEvent.KEYCODE_Z:
+				if(prefs.getBoolean("xperiaProFix", false)) {
+					bridge.transport.write(0x5C);
+					metaState &= ~META_TRANSIENT;
+					bridge.redraw();
+					return true;
+				}
+				break;
 			}
 
 		} catch (IOException e) {
@@ -514,6 +616,22 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 		}
 
 		return false;
+	}
+
+	public int keyAsControl(int key) {
+		// Support CTRL-a through CTRL-z
+		if (key >= 0x61 && key <= 0x7A)
+			key -= 0x60;
+		// Support CTRL-A through CTRL-_
+		else if (key >= 0x41 && key <= 0x5F)
+			key -= 0x40;
+		// CTRL-space sends NULL
+		else if (key == 0x20)
+			key = 0x00;
+		// CTRL-? sends DEL
+		else if (key == 0x3F)
+			key = 0x7F;
+		return key;
 	}
 
 	public void sendEscape() {
@@ -629,22 +747,42 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 		CharSequence str = "";
         Editable content = Editable.Factory.getInstance().newEditable(str);
 
-    	String set = PICKER_SETS.get(KeyCharacterMap.PICKER_DIALOG_INPUT);
+    	final String set = PICKER_SETS.get(KeyCharacterMap.PICKER_DIALOG_INPUT);
 		if (set == null) return false;
 
 		CharacterPickerDialog cpd = new CharacterPickerDialog(v.getContext(), v, content, set, true) {
-		@Override
-		public void onClick(View v) {
-			if (v instanceof Button) {
-				CharSequence result = ((Button) v).getText();
+			private void writeCharAndClose(CharSequence result) {
 				try {
 					bridge.transport.write(result.toString().getBytes());
 				} catch (IOException e) {
 					Log.e(TAG, "Problem with the CharacterPickerDialog", e);
 				}
-	        }
-	        dismiss(); //Closes the picker
-		}
+				dismiss();
+			}
+
+			@Override
+			public void onItemClick(AdapterView p, View v, int pos, long id) {
+				String result = String.valueOf(set.charAt(pos));
+				writeCharAndClose(result);
+			}
+
+			@Override
+			public void onClick(View v) {
+				if (v instanceof Button) {
+					CharSequence result = ((Button) v).getText();
+					writeCharAndClose(result);
+				}
+				dismiss(); //Closes the picker
+			}
+
+			@Override
+			public boolean onKeyDown(int keyCode, KeyEvent event) {
+				if (keyCode == KeyEvent.KEYCODE_SYM || keyCode == KeyEvent.KEYCODE_PICTSYMBOLS) {
+					dismiss();
+					return true;
+				}
+				return super.onKeyDown(keyCode, event);
+			}
 		};
 		cpd.show();
 		return true;
@@ -659,23 +797,25 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 		urlDialog.setTitle(R.string.console_menu_urlscan);
 
 		ListView urlListView = new ListView(v.getContext());
-		URLItemListener urlListener = new URLItemListener(v.getContext());
+		URLItemListener urlListener = new URLItemListener(v.getContext(),urlDialog);
 		urlListView.setOnItemClickListener(urlListener);
+		urlListView.setOnItemLongClickListener(urlListener);
 
 		urlListView.setAdapter(new ArrayAdapter<String>(v.getContext(), android.R.layout.simple_list_item_1, urls));
 		urlDialog.setContentView(urlListView);
 		urlDialog.show();
 	}
 
-	private class URLItemListener implements OnItemClickListener {
+	private class URLItemListener implements OnItemClickListener, OnItemLongClickListener {
 		private WeakReference<Context> contextRef;
+		private Dialog urlDialog;
 
-		URLItemListener(Context context) {
+		URLItemListener(Context context, Dialog urlDialog) {
 			this.contextRef = new WeakReference<Context>(context);
+			this.urlDialog = urlDialog;
 		}
 
-		public void onItemClick(AdapterView<?> arg0, View view, int position,
-				long id) {
+		public void onItemClick(AdapterView<?> arg0, View view, int position, long id) {
 			Context context = contextRef.get();
 
 			if (context == null)
@@ -692,10 +832,33 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 				context.startActivity(intent);
 			} catch (Exception e) {
 				Log.e(TAG, "couldn't open URL", e);
-				// We should probably tell the user that we couldn't find a
-				// handler...
+				// We should probably tell the user that we couldn't find a handler...
+				Toast.makeText(context, "ERROR: Couldn't open URL", Toast.LENGTH_SHORT).show();
 			}
 		}
+
+        public boolean onItemLongClick(AdapterView<?> av, View v, int pos, long id) {
+			Context context = contextRef.get();
+
+			if (context == null)
+				return false;
+			try {
+
+				String url = ((TextView) v).getText().toString();
+				if (url.indexOf("://") < 0)
+					url = "http://" + url;
+
+				clipboard.setText(url);
+				Toast.makeText(context, "URL is copied to clipboard", Toast.LENGTH_SHORT).show();
+				urlDialog.dismiss();
+				return true;
+
+			} catch (Exception e) {
+				Log.e(TAG, "couldn't copy URL", e);
+				Toast.makeText(context, "ERROR: Couldn't copy URL", Toast.LENGTH_SHORT).show();
+			}
+			return false;
+        }
 
 	}
 }
